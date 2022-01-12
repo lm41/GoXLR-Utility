@@ -1,13 +1,16 @@
 [package]
-name = "goxlr-cli"
+name = "goxlr-daemon"
 version = "0.1.0"
 edition = "2021"
-default-run = "goxlr-cli"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 goxlr-usb = {path = "../usb" }
-goxlr-types = {path = "../types", features = ["clap"] }
+goxlr-ipc = {path = "../ipc" }
+goxlr-types = {path = "../types" }
 simplelog = "0.11.1"
-clap = { version = "3.0.0", features = ["derive"] }
+tokio = {version = "1.0", features=["full"]}
+log = "0.4.14"
+anyhow = "1.0"
+strum = { version = "0.23"}

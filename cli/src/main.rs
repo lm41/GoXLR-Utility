@@ -1,38 +1,32 @@
-use std::str::FromStr;
-use std::char;
 use clap::Parser;
-use goxlr_usb::buttonstate;
+
 use goxlr_usb::buttonstate::{ButtonStates, Buttons};
-use goxlr_usb::channels::Channel;
 use goxlr_usb::channelstate::ChannelState;
-use goxlr_usb::commands::Command::SetButtonStates;
+
 use goxlr_usb::error::ConnectError;
-use goxlr_usb::faders::Fader;
 use goxlr_usb::goxlr::GoXLR;
-use goxlr_usb::microphone::MicrophoneType;
-use goxlr_usb::routing::{InputDevice, OutputDevice};
-use goxlr_usb::rusb::GlobalContext;
+
+use goxlr_types::{ChannelName, FaderName};
 use simplelog::*;
-use goxlr_usb::colouring::ColourTargets;
 
 #[derive(Parser, Debug)]
 #[clap(about, version, author)]
 struct Args {
     /// Assign fader A
-    #[clap(short = 'a', long, default_value = "Mic")]
-    fader_a: String,
+    #[clap(long, arg_enum, default_value = "mic")]
+    fader_a: ChannelName,
 
     /// Assign fader B
-    #[clap(short = 'b', long, default_value = "Chat")]
-    fader_b: String,
+    #[clap(long, arg_enum, default_value = "chat")]
+    fader_b: ChannelName,
 
     /// Assign fader C
-    #[clap(short = 'c', long, default_value = "Music")]
-    fader_c: String,
+    #[clap(long, arg_enum, default_value = "music")]
+    fader_c: ChannelName,
 
     /// Assign fader D
-    #[clap(short = 'd', long, default_value = "System")]
-    fader_d: String,
+    #[clap(long, arg_enum, default_value = "system")]
+    fader_d: ChannelName,
 
     /// How verbose should the output be (can be repeated for super verbosity!)
     #[clap(short, long, parse(from_occurrences))]
@@ -73,30 +67,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => return Err(e.into()),
     };
 
-    goxlr.set_fader(Fader::A, Channel::from_str(&cli.fader_a).unwrap())?;
-    goxlr.set_fader(Fader::B, Channel::from_str(&cli.fader_b).unwrap())?;
-    goxlr.set_fader(Fader::C, Channel::from_str(&cli.fader_c).unwrap())?;
-    goxlr.set_fader(Fader::D, Channel::from_str(&cli.fader_d).unwrap())?;
+    goxlr.set_fader(FaderName::A, cli.fader_a)?;
+    goxlr.set_fader(FaderName::B, cli.fader_b)?;
+    goxlr.set_fader(FaderName::C, cli.fader_c)?;
+    goxlr.set_fader(FaderName::D, cli.fader_d)?;
 
+    goxlr.set_volume(cli.fader_a, 0xFF)?;
+    goxlr.set_volume(cli.fader_b, 0xFF)?;
+    goxlr.set_volume(cli.fader_c, 0xFF)?;
+    goxlr.set_volume(cli.fader_d, 0xFF)?;
 
-    goxlr.set_volume_percent(Channel::from_str(&cli.fader_a).unwrap(), 0.8)?;
-    goxlr.set_volume_percent(Channel::from_str(&cli.fader_b).unwrap(), 0.8)?;
-    goxlr.set_volume_percent(Channel::from_str(&cli.fader_c).unwrap(), 0.8)?;
-    goxlr.set_volume_percent(Channel::from_str(&cli.fader_d).unwrap(), 0.8)?;
-    goxlr.set_channel_state(Channel::from_str(&cli.fader_a).unwrap(), ChannelState::Unmuted);
-    goxlr.set_channel_state(Channel::from_str(&cli.fader_b).unwrap(), ChannelState::Unmuted);
-    goxlr.set_channel_state(Channel::from_str(&cli.fader_c).unwrap(), ChannelState::Unmuted);
-    goxlr.set_channel_state(Channel::from_str(&cli.fader_d).unwrap(), ChannelState::Unmuted);
+    goxlr.set_channel_state(ChannelName::System, ChannelState::Unmuted);
 
     // So this is a complex one, there's no direct way to retrieve the button colour states
     // directly from the GoXLR, it's all managed by the app.. So for testing, all we're going
     // to do here, is a simple example of managing the buttons.
 
     // Define our buttons, set them all to a Dimmed State..
-    let mut button_states: [u8; 24] = [ButtonStates::DimmedColour1.id(); 24];
+    let mut button_states: [ButtonStates; 24] = [ButtonStates::DimmedColour1; 24];
 
     // Now set 'Mute' to a lit state..
-    button_states[Buttons::Fader2Mute.position()] = ButtonStates::Colour1.id();
+    button_states[Buttons::Fader2Mute as usize] = ButtonStates::Colour1;
 
     // Apply the state.
     goxlr.set_button_states(button_states);
@@ -134,7 +125,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for now, we're just going to create an array, use helpers to determine the correct array
     positions, manually set colours on buttons, then ship it.
      */
-
 
     /*
     // First, create an array (this will default to all lights being off)

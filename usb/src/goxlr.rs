@@ -1,15 +1,16 @@
-use crate::channels::Channel;
+use crate::buttonstate::{ButtonStates, Buttons};
 use crate::channelstate::ChannelState;
 use crate::commands::Command;
 use crate::commands::SystemInfoCommand;
 use crate::commands::SystemInfoCommand::SupportsDCPCategory;
 use crate::dcp::DCPCategory;
 use crate::error::ConnectError;
-use crate::faders::Fader;
 use crate::microphone::MicrophoneType;
 use crate::routing::InputDevice;
 use byteorder::{ByteOrder, LittleEndian};
-use log::info;
+use enumset::EnumSet;
+use goxlr_types::{ChannelName, FaderName};
+use log::{info, warn};
 use rusb::{
     Device, DeviceDescriptor, DeviceHandle, Direction, GlobalContext, Language, Recipient,
     RequestType, UsbContext,
@@ -17,18 +18,20 @@ use rusb::{
 use std::thread::sleep;
 use std::time::Duration;
 
+#[derive(Debug)]
 pub struct GoXLR<T: UsbContext> {
     handle: DeviceHandle<T>,
-    _device: Device<T>,
-    _device_descriptor: DeviceDescriptor,
+    device: Device<T>,
+    device_descriptor: DeviceDescriptor,
     timeout: Duration,
-    _language: Language,
+    language: Language,
     command_count: u16,
+    device_is_claimed: bool,
 }
 
-const VID_GOXLR: u16 = 0x1220;
-const PID_GOXLR_MINI: u16 = 0x8fe4;
-const PID_GOXLR_FULL: u16 = 0x8fe0;
+pub const VID_GOXLR: u16 = 0x1220;
+pub const PID_GOXLR_MINI: u16 = 0x8fe4;
+pub const PID_GOXLR_FULL: u16 = 0x8fe0;
 
 impl GoXLR<GlobalContext> {
     pub fn open() -> Result<Self, ConnectError> {
@@ -37,7 +40,7 @@ impl GoXLR<GlobalContext> {
             if let Ok(descriptor) = device.device_descriptor() {
                 if descriptor.vendor_id() == VID_GOXLR
                     && (descriptor.product_id() == PID_GOXLR_FULL
-                    || descriptor.product_id() == PID_GOXLR_MINI)
+                        || descriptor.product_id() == PID_GOXLR_MINI)
                 {
                     match device.open() {
                         Ok(handle) => return GoXLR::from_device(handle, descriptor),
@@ -67,16 +70,17 @@ impl<T: UsbContext> GoXLR<T> {
             .ok_or(ConnectError::DeviceNotGoXLR)?
             .to_owned();
 
-        handle.set_active_configuration(1);
-        handle.claim_interface(0);
+        let _ = handle.set_active_configuration(1);
+        let device_is_claimed = handle.claim_interface(0).is_ok();
 
         let mut goxlr = Self {
             handle,
-            _device: device,
-            _device_descriptor: device_descriptor,
+            device,
+            device_descriptor,
             timeout,
-            _language: language,
+            language,
             command_count: 0,
+            device_is_claimed,
         };
 
         goxlr.read_control(RequestType::Vendor, 0, 0, 0, 24)?; // ??
@@ -85,6 +89,42 @@ impl<T: UsbContext> GoXLR<T> {
         goxlr.read_control(RequestType::Vendor, 3, 0, 0, 1040)?; // ??
 
         Ok(goxlr)
+    }
+
+    pub fn usb_device_descriptor(&self) -> &DeviceDescriptor {
+        &self.device_descriptor
+    }
+
+    pub fn usb_device_manufacturer(&self) -> Result<String, rusb::Error> {
+        self.handle.read_manufacturer_string(
+            self.language,
+            &self.device_descriptor,
+            Duration::from_millis(100),
+        )
+    }
+
+    pub fn usb_device_product_name(&self) -> Result<String, rusb::Error> {
+        self.handle.read_product_string(
+            self.language,
+            &self.device_descriptor,
+            Duration::from_millis(100),
+        )
+    }
+
+    pub fn usb_device_is_claimed(&self) -> bool {
+        self.device_is_claimed
+    }
+
+    pub fn usb_device_has_kernel_driver_active(&self) -> Result<bool, rusb::Error> {
+        self.handle.kernel_driver_active(0)
+    }
+
+    pub fn usb_bus_number(&self) -> u8 {
+        self.device.bus_number()
+    }
+
+    pub fn usb_address(&self) -> u8 {
+        self.device.address()
     }
 
     pub fn read_control(
@@ -168,13 +208,13 @@ impl<T: UsbContext> GoXLR<T> {
         Ok(())
     }
 
-    pub fn set_fader(&mut self, fader: Fader, channel: Channel) -> Result<(), rusb::Error> {
+    pub fn set_fader(&mut self, fader: FaderName, channel: ChannelName) -> Result<(), rusb::Error> {
         // Channel ID, unknown, unknown, unknown
-        self.request_data(Command::SetFader(fader), &[channel.id(), 0x00, 0x00, 0x00])?;
+        self.request_data(Command::SetFader(fader), &[channel as u8, 0x00, 0x00, 0x00])?;
         Ok(())
     }
 
-    pub fn set_volume(&mut self, channel: Channel, volume: u8) -> Result<(), rusb::Error> {
+    pub fn set_volume(&mut self, channel: ChannelName, volume: u8) -> Result<(), rusb::Error> {
         self.request_data(Command::SetChannelVolume(channel), &[volume])?;
         Ok(())
     }
@@ -186,15 +226,15 @@ impl<T: UsbContext> GoXLR<T> {
 
     pub fn set_channel_state(
         &mut self,
-        channel: Channel,
+        channel: ChannelName,
         state: ChannelState,
     ) -> Result<(), rusb::Error> {
         self.request_data(Command::SetChannelState(channel), &[state.id()])?;
         Ok(())
     }
 
-    pub fn set_button_states(&mut self, data: [u8; 24]) -> Result<(), rusb::Error> {
-        self.request_data(Command::SetButtonStates(), &data)?;
+    pub fn set_button_states(&mut self, data: [ButtonStates; 24]) -> Result<(), rusb::Error> {
+        self.request_data(Command::SetButtonStates(), &data.map(|state| state as u8))?;
         Ok(())
     }
 
@@ -203,17 +243,29 @@ impl<T: UsbContext> GoXLR<T> {
         Ok(())
     }
 
-    pub fn set_fader_display_mode(&mut self, fader: Fader, gradient: bool, meter: bool) -> Result<(), rusb::Error> {
+    pub fn set_fader_display_mode(
+        &mut self,
+        fader: FaderName,
+        gradient: bool,
+        meter: bool,
+    ) -> Result<(), rusb::Error> {
         // This one really doesn't need anything fancy..
-        let gradientByte :u8 = if gradient { 0x01 } else { 0x00 };
-        let meterByte :u8 = if meter { 0x01 } else { 0x00 };
+        let gradientByte: u8 = if gradient { 0x01 } else { 0x00 };
+        let meterByte: u8 = if meter { 0x01 } else { 0x00 };
 
         // TODO: Seemingly broken?
-        self.request_data(Command::SetFaderDisplayMode(fader), &[gradientByte, meterByte]);
+        self.request_data(
+            Command::SetFaderDisplayMode(fader),
+            &[gradientByte, meterByte],
+        );
         Ok(())
     }
 
-    pub fn set_fader_scribble(&mut self, fader: Fader, data: [u8; 1024]) -> Result<(), rusb::Error> {
+    pub fn set_fader_scribble(
+        &mut self,
+        fader: FaderName,
+        data: [u8; 1024],
+    ) -> Result<(), rusb::Error> {
         // Dump it, see what happens..
         self.request_data(Command::SetScribble(fader), &data);
         Ok(())
@@ -246,9 +298,30 @@ impl<T: UsbContext> GoXLR<T> {
         Ok(())
     }
 
-    pub fn await_interrupt(&mut self, duration: Duration) -> Result<(), rusb::Error> {
+    pub fn get_button_states(&mut self) -> Result<(EnumSet<Buttons>, [u8; 4]), rusb::Error> {
+        let result = self.request_data(Command::GetButtonStates, &[])?;
+        let mut pressed = EnumSet::empty();
+        let mut mixers = [0; 4];
+        let button_states = LittleEndian::read_u32(&result[0..4]);
+        mixers[0] = result[8];
+        mixers[1] = result[9];
+        mixers[2] = result[10];
+        mixers[3] = result[11];
+
+        for button in EnumSet::<Buttons>::all() {
+            if button_states & (1 << button as u8) != 0 {
+                pressed.insert(button);
+            }
+        }
+
+        Ok((pressed, mixers))
+    }
+
+    pub fn await_interrupt(&mut self, duration: Duration) -> bool {
         let mut buffer = [0u8; 6];
-        self.handle.read_interrupt(0x81, &mut buffer, duration);
-        Ok(())
+        matches!(
+            self.handle.read_interrupt(0x81, &mut buffer, duration),
+            Ok(_)
+        )
     }
 }
